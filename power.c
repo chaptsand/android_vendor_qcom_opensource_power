@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -46,12 +46,18 @@
 #include "utils.h"
 #include "hint-data.h"
 #include "performance.h"
-#include "power-common.h"
+#include "power-common-old.h"
 
 static struct hint_handles handles[NUM_HINTS];
-static int handleER = 0;
 
-void power_init()
+static int power_device_open(const hw_module_t* module, const char* name,
+        hw_device_t** device);
+
+static struct hw_module_methods_t power_module_methods = {
+    .open = power_device_open,
+};
+
+static void power_init(struct power_module *module)
 {
     ALOGI("Initing");
 
@@ -61,7 +67,7 @@ void power_init()
     }
 }
 
-int __attribute__ ((weak)) power_hint_override(power_hint_t hint,
+int __attribute__ ((weak)) power_hint_override(struct power_module *module, power_hint_t hint,
         void *data)
 {
     return HINT_NONE;
@@ -70,10 +76,11 @@ int __attribute__ ((weak)) power_hint_override(power_hint_t hint,
 /* Declare function before use */
 void interaction(int duration, int num_args, int opt_list[]);
 
-void power_hint(power_hint_t hint, void *data)
+static void power_hint(struct power_module *module, power_hint_t hint,
+        void *data)
 {
     /* Check if this hint has been overridden. */
-    if (power_hint_override(hint, data) == HINT_HANDLED) {
+    if (power_hint_override(module, hint, data) == HINT_HANDLED) {
         /* The power_hint has been handled. We can skip the rest. */
         return;
     }
@@ -102,42 +109,23 @@ void power_hint(power_hint_t hint, void *data)
                     handles[hint].ref_count++;
             }
             else
-                if (handles[hint].handle > 0) {
+                if (handles[hint].handle > 0)
                     if (--handles[hint].ref_count == 0) {
                         release_request(handles[hint].handle);
                         handles[hint].handle = 0;
                     }
-                }
                 else
                     ALOGE("Lock for hint: %X was not acquired, cannot be released", hint);
         break;
-        default:
-        break;
     }
 }
 
-bool is_expensive_rendering_supported() {
-    char property[PROPERTY_VALUE_MAX];
-    strlcpy(property, perf_get_property("vendor.perf.expensive_rendering", "0").value,
-            PROPERTY_VALUE_MAX);
-    return atoi(property) == 1 ? true : false;
-}
-
-void set_expensive_rendering(bool enabled)
-{
-    if (enabled) {
-        handleER = perf_hint_enable(PERF_HINT_EXPENSIVE_RENDERING, 0);
-    } else if (handleER > 0) {
-        release_request(handleER);
-    }
-}
-
-int __attribute__ ((weak)) set_interactive_override(int on)
+int __attribute__ ((weak)) set_interactive_override(struct power_module *module, int on)
 {
     return HINT_NONE;
 }
 
-void set_interactive(int on)
+void set_interactive(struct power_module *module, int on)
 {
     if (!on) {
         /* Send Display OFF hint to perf HAL */
@@ -147,9 +135,63 @@ void set_interactive(int on)
         perf_hint_enable(VENDOR_HINT_DISPLAY_ON, 0);
     }
 
-    if (set_interactive_override(on) == HINT_HANDLED) {
+    if (set_interactive_override(module, on) == HINT_HANDLED) {
         return;
     }
 
     ALOGI("Got set_interactive hint");
 }
+
+static int power_device_open(const hw_module_t* module, const char* name,
+        hw_device_t** device)
+{
+    int status = -EINVAL;
+    if (module && name && device) {
+        if (!strcmp(name, POWER_HARDWARE_MODULE_ID)) {
+            power_module_t *dev = (power_module_t *)malloc(sizeof(*dev));
+
+            if(dev) {
+                memset(dev, 0, sizeof(*dev));
+
+                if(dev) {
+                    /* initialize the fields */
+                    dev->common.module_api_version = POWER_MODULE_API_VERSION_0_2;
+                    dev->common.tag = HARDWARE_DEVICE_TAG;
+                    dev->init = power_init;
+                    dev->powerHint = power_hint;
+                    dev->setInteractive = set_interactive;
+                    /* At the moment we support 0.2 APIs */
+                    dev->setFeature = NULL,
+                        dev->get_number_of_platform_modes = NULL,
+                        dev->get_platform_low_power_stats = NULL,
+                        dev->get_voter_list = NULL,
+                        *device = (hw_device_t*)dev;
+                    status = 0;
+                } else {
+                    status = -ENOMEM;
+                }
+            }
+            else {
+                status = -ENOMEM;
+            }
+        }
+    }
+
+    return status;
+}
+
+struct power_module HAL_MODULE_INFO_SYM = {
+    .common = {
+        .tag = HARDWARE_MODULE_TAG,
+        .module_api_version = POWER_MODULE_API_VERSION_0_2,
+        .hal_api_version = HARDWARE_HAL_API_VERSION,
+        .id = POWER_HARDWARE_MODULE_ID,
+        .name = "QTI Power HAL",
+        .author = "QTI",
+        .methods = &power_module_methods,
+    },
+
+    .init = power_init,
+    .powerHint = power_hint,
+    .setInteractive = set_interactive,
+};

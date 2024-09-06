@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -47,9 +47,7 @@
 #include "performance.h"
 #include "power-common.h"
 
-pthread_mutex_t camera_hint_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int display_hint_sent;
-static int camera_hint_ref_count;
 
 static int process_video_encode_hint(void *metadata)
 {
@@ -80,48 +78,22 @@ static int process_video_encode_hint(void *metadata)
     if (video_encode_metadata.state == 1) {
         if ((strncmp(governor, INTERACTIVE_GOVERNOR, strlen(INTERACTIVE_GOVERNOR)) == 0) &&
                 (strlen(governor) == strlen(INTERACTIVE_GOVERNOR))) {
-            /* 1. cpufreq params
-             *    -above_hispeed_delay for LVT - 40ms
-             *    -go hispeed load for LVT - 95
-             *    -hispeed freq for LVT - 556 MHz
-             *    -target load for LVT - 90
-             *    -above hispeed delay for sLVT - 40ms
-             *    -go hispeed load for sLVT - 95
-             *    -hispeed freq for sLVT - 806 MHz
-             *    -target load for sLVT - 90
-             * 2. bus DCVS set to V2 config:
-             *    -low power ceil mpbs - 2500
-             *    -low power io percent - 50
-             * 3. hysteresis optimization
-             *    -bus dcvs hysteresis tuning
-             *    -sample_ms of 10 ms
-             *    -sLVT hispeed freq to 806MHz
+            /* sched and cpufreq params
+             * hispeed freq - 768 MHz
+             * target load - 90
+             * above_hispeed_delay - 40ms
+             * sched_small_tsk - 50
              */
-            int resource_values[] = {0x41400000, 0x4, 0x41410000, 0x5F, 0x41414000, 0x326,
-                0x41420000, 0x5A, 0x41400100, 0x4, 0x41410100, 0x5F, 0x41414100, 0x22C, 0x41420100, 0x5A,
-                0x41810000, 0x9C4, 0x41814000, 0x32, 0x4180C000, 0x0, 0x41820000, 0xA};
+            int resource_values[] = {0x2C07, 0x2F5A, 0x2704, 0x4032};
 
-            pthread_mutex_lock(&camera_hint_mutex);
-            camera_hint_ref_count++;
-            if (camera_hint_ref_count == 1) {
-                perform_hint_action(video_encode_metadata.hint_id,
-                        resource_values, sizeof(resource_values)/sizeof(resource_values[0]));
-            }
-            pthread_mutex_unlock(&camera_hint_mutex);
-            ALOGI("Video Encode hint start");
+            perform_hint_action(video_encode_metadata.hint_id,
+                    resource_values, sizeof(resource_values)/sizeof(resource_values[0]));
             return HINT_HANDLED;
         }
     } else if (video_encode_metadata.state == 0) {
         if ((strncmp(governor, INTERACTIVE_GOVERNOR, strlen(INTERACTIVE_GOVERNOR)) == 0) &&
                 (strlen(governor) == strlen(INTERACTIVE_GOVERNOR))) {
-            pthread_mutex_lock(&camera_hint_mutex);
-            camera_hint_ref_count--;
-            if (!camera_hint_ref_count) {
-                undo_hint_action(video_encode_metadata.hint_id);
-            }
-            pthread_mutex_unlock(&camera_hint_mutex);
-
-            ALOGI("Video Encode hint stop");
+            undo_hint_action(video_encode_metadata.hint_id);
             return HINT_HANDLED;
         }
     }
@@ -143,7 +115,7 @@ int power_hint_override(struct power_module *module, power_hint_t hint, void *da
 
 int set_interactive_override(struct power_module *module, int on)
 {
-    return HINT_HANDLED; /* Don't excecute this code path, not in use */
+    return HINT_NONE; /* Don't excecute this code path, not in use */
     char governor[80];
 
     if (get_scaling_governor(governor, sizeof(governor)) == -1) {
@@ -161,7 +133,6 @@ int set_interactive_override(struct power_module *module, int on)
                 perform_hint_action(DISPLAY_STATE_HINT_ID,
                 resource_values, sizeof(resource_values)/sizeof(resource_values[0]));
                 display_hint_sent = 1;
-                ALOGI("Display Off hint start");
                 return HINT_HANDLED;
             }
         }
@@ -171,7 +142,6 @@ int set_interactive_override(struct power_module *module, int on)
             (strlen(governor) == strlen(INTERACTIVE_GOVERNOR))) {
             undo_hint_action(DISPLAY_STATE_HINT_ID);
             display_hint_sent = 0;
-            ALOGI("Display Off hint stop");
             return HINT_HANDLED;
         }
     }
